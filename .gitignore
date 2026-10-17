@@ -1,0 +1,59 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Conda / virtual environments
+.venv/
+venv/
+env/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Excel / Office files
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.csv
+
+# Office temporary lock files
+~$*.xlsx
+~$*.xls
+~$*.xlsm
+~$*.xlsb
+
+# Logs
+*.log
+
+# Model checkpoints and outputs
+saved_model/
+examples/saved_model/
+*.ckpt
+*.pt
+*.pth
+
+# Prediction outputs
+*_predictions.txt
+
+# Preprocessed dataset cache
+*.pkl
+
+# Ignore root-level zip archives
+/*.zip
+
+# Ignore all data files
+data/**
+
+# But keep data directories and placeholder files
+!data/
+!data/**/
+!data/**/.gitkeep

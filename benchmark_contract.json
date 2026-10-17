@@ -1,0 +1,205 @@
+{
+  "protocol_version": "item_multikc_window_v1",
+  "repository": {
+    "name": "Zhangcantprogram/RAPLKT",
+    "branch": "V1.4",
+    "source_commit_sha": "679c3bfd54d5785a2a472af621b165bfac09bbe9",
+    "raplkt_preprocessing_cache_version": "v7",
+    "akt_preprocessing_cache_version": "v5"
+  },
+  "scope": "Cross-model fair benchmark only; this contract does not describe RAPLKT model innovations.",
+  "global_contract": {
+    "raw_preprocessing": {
+      "entrypoint": "examples/data_preprocess.py",
+      "command_template": "python data_preprocess.py -d <dataset> -m 3 -l 200 -k 5",
+      "min_seq_len": 3,
+      "maxlen": 200,
+      "kfold": 5,
+      "response_domain": [0, 1],
+      "id_mapping": "Map uid, question, and KC strings to deterministic raw 0-based integer IDs in first-occurrence order after filtering and multi-KC expansion; persist keyid2idx.json.",
+      "multi_kc_expansion": "A KC string joined with '_' is expanded into consecutive positions. The first position has is_repeat=0 and each additional KC has is_repeat=1. Question, response, timestamp, and use-time fields are repeated across the block.",
+      "item_boundary_safe_segmentation": "train_valid_sequences.csv and test_sequences.csv are packed to maxlen without splitting an is_repeat item block. A block longer than maxlen is an error. A final segment shorter than min_seq_len is dropped.",
+      "padding_value": -1
+    },
+    "student_split": {
+      "unit": "student row",
+      "random_state": 1024,
+      "shuffle": "pandas.DataFrame.sample(frac=1.0, random_state=1024)",
+      "train_valid_ratio": 0.8,
+      "test_ratio": 0.2,
+      "rounding": "test_count=floor(number_of_students*0.2); shuffled prefix is train+valid and suffix is test"
+    },
+    "folds": {
+      "count": 5,
+      "assignment": "Reshuffle train+valid student rows with random_state=1024, divide contiguous rows into folds 0..4, and distribute the remainder one student at a time to the earliest folds.",
+      "training_definition": "For requested fold f, train on folds {0,1,2,3,4} minus {f} and validate only on fold f.",
+      "test_fold": -1
+    },
+    "files": {
+      "train_valid_sequences.csv": "Item-boundary-safe, non-overlapping, maxlen-padded train/validation sequences with fold, selectmasks, and is_repeat.",
+      "test.csv": "Complete expanded-position held-out student histories before sequence segmentation; fold=-1; includes globally unique expanded-position cidxs.",
+      "test_sequences.csv": "Item-boundary-safe, non-overlapping Test sequences; tails shorter than min_seq_len are dropped.",
+      "test_window_sequences.csv": "Expanded-position Window Test. For histories longer than maxlen, the first maxlen window selects all eligible positions and each later one-position slide selects only its final position. This is not an item-level window.",
+      "keyid2idx.json": "Raw string-to-0-based-ID mappings for uid/questions/concepts plus max_concepts."
+    },
+    "loader_protocol": {
+      "sequence_mode": "collapse",
+      "window_type": "expanded-position window",
+      "window_q2cs_source": "test.csv",
+      "q2cs_builder_columns": ["fold", "questions", "concepts", "is_repeat"],
+      "q2cs_builder_forbidden_columns": ["responses"],
+      "q2cs_builder_rule": "Build raw question->sorted unique KC sets from complete test.csv metadata, truncate only after sorting to dataset max_concepts, and never read a response label.",
+      "repeat_rule": "Collapse one rep=0 plus following rep=1 positions into one item. If q2cs already supplies the complete set, visible repeats must not append duplicate KCs.",
+      "orphan_repeat_rule": "A leading is_repeat=1 block caused by a window boundary is history only and must have no evaluation target.",
+      "raw_ids": "Manifest, q2cs, and contract IDs are raw 0-based IDs.",
+      "internal_ids": {
+        "AKT": "Use raw IDs directly and -1 for preprocessing padding.",
+        "RAPLKT": "Add 1 internally so 0 is padding; subtract 1 when writing manifests."
+      },
+      "next_item_shift": 1,
+      "target_selection": "Predictions use positions 0..S-2 to predict positions 1..S-1. smasks are the shifted selectmasks intersected with valid adjacent positions; collapsed rep=1 positions and orphan repeats are not targets.",
+      "one_probability_per_item": "Each eligible collapsed item target contributes exactly one scalar probability; no KC-level probability may be counted as a separate example.",
+      "candidate_k_rule": "K is the number of true entries in the full shifted candidate-KC mask for that item, not the visible KC count and not the model's chosen responsibility support."
+    },
+    "evaluation": {
+      "aggregation": "Concatenate all eligible item targets globally, then compute metrics once; do not average per student, sequence, window, item, or KC.",
+      "roc_auc": "Global item-level sklearn.metrics.roc_auc_score(response, probability).",
+      "accuracy": "Global item-level accuracy with predicted label 1 iff probability >= 0.5.",
+      "groups": {
+        "overall": "all targets",
+        "K1": "K == 1",
+        "K2": "K == 2",
+        "K3+": "K >= 3",
+        "Multi": "K >= 2"
+      }
+    },
+    "data_loader_order": {
+      "train_shuffle": true,
+      "validation_shuffle": false,
+      "test_shuffle": false,
+      "window_test_shuffle": false
+    },
+    "checkpoint_selection": {
+      "criterion": "validation ROC-AUC only",
+      "strict_best": "Save whenever current validation AUC is strictly greater than the true best validation AUC, even if the increase is smaller than early_stop_min_delta.",
+      "patience": "early_stop_min_delta affects only the independent patience reference and never suppresses a true-best checkpoint.",
+      "forbidden": "Test and Window Test labels or metrics must not affect checkpointing, early stopping, hyperparameter selection, or model selection."
+    },
+    "window_test_manifest": {
+      "filename": "window_test_manifest.tsv",
+      "delimiter": "tab",
+      "columns": ["target_cidx", "question_id", "response", "kc_ids", "k_count", "prediction"],
+      "field_rules": {
+        "target_cidx": "Required non-negative globally unique expanded-position identity of the rep=0 target; shft_cidxs must exist and placeholder -1 is forbidden.",
+        "question_id": "Raw 0-based question ID.",
+        "response": "Integer 0 or 1.",
+        "kc_ids": "Comma-separated raw 0-based unique KC IDs; writer output is sorted.",
+        "k_count": "Must equal the number of unique IDs in kc_ids.",
+        "prediction": "One scalar item-correctness probability. It is model-specific and excluded from target-identity equality."
+      }
+    },
+    "assert_same_benchmark_targets": {
+      "required_columns": ["target_cidx", "question_id", "response", "kc_ids", "k_count"],
+      "rules": [
+        "Both manifests must contain the same number of rows.",
+        "target_cidx must be integer, non-negative, and unique within each manifest.",
+        "Canonical-sort both manifests by target_cidx before comparison.",
+        "response must be exactly 0 or 1.",
+        "kc_ids must be comma-separated integers with no duplicates; compare KC sets in sorted canonical order.",
+        "k_count must equal the unique KC count.",
+        "After canonicalization, target_cidx, question_id, response, kc_ids, and k_count must match exactly row by row."
+      ]
+    },
+    "external_model_adapter": {
+      "applies_to": ["FAKT", "other KT models without native multi-KC input"],
+      "minimum_rule": "Preserve the complete candidate KC set for every item and aggregate it into one item representation using a response-free symmetric operation.",
+      "allowed_examples": ["masked mean", "masked sum with explicit normalization", "permutation-invariant attention whose query and weights do not use the current response"],
+      "forbidden": ["taking only the first KC", "using the current response or label to construct the item input", "using future interactions", "changing target identities or data splits", "emitting one prediction per KC"]
+    }
+  },
+  "datasets": {
+    "algebra2005": {
+      "dataset_name": "algebra2005",
+      "raw_file": "data/algebra2005/algebra_2005_2006_train.txt",
+      "preprocessing_command": "cd examples && python data_preprocess.py -d algebra2005 -m 3 -l 200 -k 5",
+      "preprocessing_rules": [
+        "Read the tab-separated source with UTF-8 and low_memory=False.",
+        "Sanitize Problem Name and Step Name with replace_text and define question as '<Problem Name>----<Step Name>'.",
+        "Drop rows missing Anon Student Id, derived Questions, KC(Default), First Transaction Time, or Correct First Attempt.",
+        "Keep only Correct First Attempt in {0,1}.",
+        "Sanitize KC(Default); interpret '~~' as the multi-KC delimiter and convert it to '_' before shared expansion.",
+        "Group students with sort=False and order each student's interactions by converted First Transaction Time, then original source-row index."
+      ],
+      "resolved_parameters": {
+        "min_seq_len": 3,
+        "maxlen": 200,
+        "kfold": 5,
+        "max_concepts": 7,
+        "num_questions": 173113,
+        "num_concepts": 112,
+        "student_split": "80/20",
+        "random_state": 1024,
+        "folds": [0, 1, 2, 3, 4],
+        "sequence_mode": "collapse",
+        "next_item_shift": 1
+      },
+      "resolved_protocol": {
+        "multi_kc": "Expand every item to rep=0 followed by zero or more rep=1 positions; collapse back to one item with the complete unique KC set.",
+        "segmentation": "Item-boundary-safe for train_valid_sequences.csv and test_sequences.csv.",
+        "window": "Expanded-position maxlen=200 window; q2cs comes only from test.csv metadata and response is forbidden.",
+        "targets_and_metrics": "Shift by one, select with smasks, emit one probability per eligible item, then compute global item-level AUC/ACC and K1/K2/K3+/Multi groups from the complete KC set.",
+        "loader_order": "train shuffled; validation, Test, and Window Test sequential.",
+        "checkpoint": "Strict best validation AUC; early_stop_min_delta only controls patience; Test and Window Test are never selection inputs."
+      },
+      "artifacts": {
+        "train_valid_sequences.csv": {"rows": 3980, "bytes": 22023391, "line_endings": "CRLF", "sha256_bytes": "b1824ce7751f36a6d98b969f1d2dac74f3151afc54448b8423d86e826611ea00", "sha256_lf_canonical": "06c88114094366023951bb21f4b3bf9c66900bf70083701fccac97b385434da0"},
+        "test.csv": {"rows": 114, "bytes": 4387818, "line_endings": "CRLF", "sha256_bytes": "f67d2eee8e388a168bdab469a7adaeef067d2fe826e6ca48e4fd9d9e328c9858", "sha256_lf_canonical": "c9b6a040a3391e3a539d5e1ae9debbd3edb463d9fcc365d39609dd5db19badcf"},
+        "test_sequences.csv": {"rows": 732, "bytes": 4903087, "line_endings": "CRLF", "sha256_bytes": "c6c6f95dd3cf260488e12d116681dd08034dabbed93d4487504cbee9ac224253", "sha256_lf_canonical": "8e902c7bc18e089c01c01a325f78ba8e91d6392144c43701ef9709f89085f1a6"},
+        "test_window_sequences.csv": {"rows": 114220, "bytes": 810463802, "line_endings": "CRLF", "sha256_bytes": "5c48203675f4d5e365a925940d528ba9e79d447d7c1a866a67ccc5487cd5f1cb", "sha256_lf_canonical": "4a6d2d257f7f9126baa2280963fe6af2ac86bc02fcf014cb891cf71f166d8a96"},
+        "keyid2idx.json": {"bytes": 5954281, "line_endings": "none", "sha256_bytes": "9a9dcf9c81f3811fb4243953fb9fd506446e3247924df8320dec3ad0cdd43069", "sha256_lf_canonical": "9a9dcf9c81f3811fb4243953fb9fd506446e3247924df8320dec3ad0cdd43069"}
+      }
+    },
+    "assist2017": {
+      "dataset_name": "assist2017",
+      "raw_file": "data/assist2017/anonymized_full_release_competition_dataset.csv",
+      "preprocessing_command": "cd examples && python data_preprocess.py -d assist2017 -m 3 -l 200 -k 5",
+      "preprocessing_rules": [
+        "Read the UTF-8 CSV with low_memory=False.",
+        "Drop rows missing studentId, problemId, correct, skill, or startTime and keep only correct in {0,1}.",
+        "For each problemId, build the deterministic first-appearance-order union of sanitized real skill values across the filtered data.",
+        "Exclude skill equal to 'noskill' case-insensitively from the union. Remove every interaction of a problemId whose union has no real KC.",
+        "Attach the same complete underscore-joined union KC set to every remaining interaction of that problemId.",
+        "Convert timeTaken to rounded milliseconds and startTime to integer milliseconds.",
+        "Group students with sort=False and order each student's interactions by startTime, then original source-row index."
+      ],
+      "resolved_parameters": {
+        "min_seq_len": 3,
+        "maxlen": 200,
+        "kfold": 5,
+        "max_concepts": 2,
+        "num_questions": 2210,
+        "num_concepts": 101,
+        "student_split": "80/20",
+        "random_state": 1024,
+        "folds": [0, 1, 2, 3, 4],
+        "sequence_mode": "collapse",
+        "next_item_shift": 1
+      },
+      "resolved_protocol": {
+        "multi_kc": "Use problemId's complete real-KC union, expand to rep=0 followed by rep=1 positions, and collapse back to one item with the complete unique set.",
+        "segmentation": "Item-boundary-safe for train_valid_sequences.csv and test_sequences.csv.",
+        "window": "Expanded-position maxlen=200 window; q2cs comes only from test.csv metadata and response is forbidden.",
+        "targets_and_metrics": "Shift by one, select with smasks, emit one probability per eligible item, then compute global item-level AUC/ACC and K1/K2/K3+/Multi groups from the complete KC set.",
+        "loader_order": "train shuffled; validation, Test, and Window Test sequential.",
+        "checkpoint": "Strict best validation AUC; early_stop_min_delta only controls patience; Test and Window Test are never selection inputs."
+      },
+      "artifacts": {
+        "train_valid_sequences.csv": {"rows": 5793, "bytes": 38236388, "line_endings": "CRLF", "sha256_bytes": "f5c6b4e1851dbc549729b5a26696a87b373b860eb3a29812a8bf26d0204e65b0", "sha256_lf_canonical": "555e62de7d20b95bca4e91b32bed646e3b2897416cf62a2822b7e8d3c5cb2387"},
+        "test.csv": {"rows": 341, "bytes": 9352634, "line_endings": "CRLF", "sha256_bytes": "5ad15f4aebe0ffebda0760e504a7cb224f787de3820b45a12fc4efb6c729583f", "sha256_lf_canonical": "c40034e8e2123b041fa716f5787b70ea28fd0ab903a51ede054ba3a40569bb4d"},
+        "test_sequences.csv": {"rows": 1372, "bytes": 10691594, "line_endings": "CRLF", "sha256_bytes": "0a1e40eda51849607f36761685c7b09c90e6a32ad12f19eec1e852b76e8fe4d4", "sha256_lf_canonical": "37dc880b80ea7f1407d549cea60f846f67816d1ed52246c31caa98d01d9034fa"},
+        "test_window_sequences.csv": {"rows": 175066, "bytes": 1470120034, "line_endings": "CRLF", "sha256_bytes": "23c9bfe1a839385c8e827a7343ac4f577c90235d79b463369be58a81b79c475c", "sha256_lf_canonical": "8d9dc3687759ecb5d170720a28d4cb8be668fce69fbe9c4966ebd77a78c94ec8"},
+        "keyid2idx.json": {"bytes": 54145, "line_endings": "none", "sha256_bytes": "5def52ea84dfde4c9c5b9be60a0203ed997a1ffde68f0457533d3b1786cb80e4", "sha256_lf_canonical": "5def52ea84dfde4c9c5b9be60a0203ed997a1ffde68f0457533d3b1786cb80e4"}
+      }
+    }
+  }
+}

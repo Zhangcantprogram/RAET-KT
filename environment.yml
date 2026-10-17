@@ -1,0 +1,19 @@
+name: rapl
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+  - numpy=1.26.4
+  - pandas=2.2.2
+  - scikit-learn=1.5.2
+  - tqdm
+  - pip:
+      - --index-url https://download.pytorch.org/whl/cu128
+      - torch==2.11.0
+      - torchvision==0.26.0
+      - torchaudio==2.11.0
+# conda env create -f environment.yml
+# pip install -e .
