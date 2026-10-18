@@ -9,7 +9,7 @@ def process_raw_data(dataset_name, dname2paths):
     elif dataset_name == "assist2017":
         from .assist2017_preprocess import read_data_from_csv
     elif dataset_name in {"ednet", "ednet_kt1_5k"}:
-        from .ednet_kt1_preprocess_20260826_010359 import read_data_from_csv
+        from .ednet_preprocess import read_data_from_csv
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 

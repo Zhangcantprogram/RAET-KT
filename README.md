@@ -43,7 +43,6 @@ RAET-KT/
 |   |   `-- akt.py                # Shared AKT backbone
 |   |-- preprocess/               # Three dataset adapters and shared utilities
 |   `-- utils/                    # Reproducibility and logging utilities
-|-- tests/                        # Model, preprocessing, and protocol checks
 |-- environment.yml
 `-- setup.py
 ```
@@ -79,13 +78,13 @@ Use `--file_path` to specify a different raw input. Shared preprocessing creates
 
 ### EdNet-KT1
 
-The adapter is `pykt/preprocess/ednet_kt1_preprocess_20260826_010359.py`. It reads a deterministic subset manifest and the original student and question files.
+The adapter is `pykt/preprocess/ednet_preprocess.py`. It reads a deterministic subset manifest and the original student and question files.
 
 To create a manifest, place student CSV files in `data/ednet/KT1/` and question metadata in `data/ednet/contents/questions.csv`, then run this Python code from the project root:
 
 ```python
 from pathlib import Path
-from pykt.preprocess.ednet_kt1_preprocess_20260826_010359 import (
+from pykt.preprocess.ednet_preprocess import (
     load_question_metadata, select_students, write_subset_manifest,
 )
 
@@ -118,17 +117,83 @@ Reuse the original manifest to reproduce an existing experiment: rebuilding a su
 For Algebra2005:
 
 ```bash
-python examples/wandb_raetkt_train.py \
-  --dataset_name algebra2005 --save_dir saved_model_raetkt \
-  --seed 3407 --fold 0 --d_model 256 --d_ff 256 \
-  --num_attn_heads 4 --n_blocks 2 --dropout 0.1 \
-  --learning_rate 0.0001 --batch_size 64 --num_epochs 200 \
-  --max_concepts 8 --sequence_mode collapse \
+CUDA_VISIBLE_DEVICES=0 python -u examples/wandb_raetkt_train.py \
+  --dataset_name algebra2005 \
+  --emb_type qid \
+  --save_dir saved_model_raetkt \
+  --seed 3407 \
+  --fold 0 \
+  --d_model 256 \
+  --d_ff 256 \
+  --num_attn_heads 4 \
+  --n_blocks 2 \
+  --dropout 0.1 \
+  --learning_rate 0.00003 \
+  --batch_size 64 \
+  --num_epochs 200 \
+  --early_stop_rounds 10 \
+  --early_stop_min_delta 0.001 \
+  --max_concepts 7 \
+  --sequence_mode collapse \
+  --evidence_prior_alpha 0.5 \
+  --evidence_prior_beta 0.5 \
   --responsibility_temperature 1.0 \
   --set_loss_weight 0.1
 ```
 
-For ASSISTments2017 or EdNet-KT1, use the same command with `--dataset_name assist2017` or `--dataset_name ednet_kt1_5k`. These commands are runnable starting settings; select dataset-specific hyperparameters using validation performance.
+For Assistments2017:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -u examples/wandb_raetkt_train.py \
+  --dataset_name assist2017 \
+  --emb_type qid \
+  --save_dir saved_model_raetkt \
+  --seed 3407 \
+  --fold 0 \
+  --d_model 256 \
+  --d_ff 256 \
+  --num_attn_heads 4 \
+  --n_blocks 2 \
+  --dropout 0.1 \
+  --learning_rate 0.0001 \
+  --batch_size 64 \
+  --num_epochs 200 \
+  --early_stop_rounds 10 \
+  --early_stop_min_delta 0.001 \
+  --max_concepts 2 \
+  --sequence_mode collapse \
+  --evidence_prior_alpha 1.0 \
+  --evidence_prior_beta 1.0 \
+  --responsibility_temperature 1.0 \
+  --set_loss_weight 0.1
+```
+
+For EdNet:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -u examples/wandb_raetkt_train.py \
+  --dataset_name ednet_kt1_5k \
+  --emb_type qid \
+  --save_dir saved_model_raetkt \
+  --seed 3407 \
+  --fold 0 \
+  --d_model 256 \
+  --d_ff 256 \
+  --num_attn_heads 4 \
+  --n_blocks 2 \
+  --dropout 0.1 \
+  --learning_rate 0.0001 \
+  --batch_size 64 \
+  --num_epochs 200 \
+  --early_stop_rounds 10 \
+  --early_stop_min_delta 0.001 \
+  --max_concepts 6 \
+  --sequence_mode collapse \
+  --evidence_prior_alpha 1.0 \
+  --evidence_prior_beta 1.0 \
+  --responsibility_temperature 1.0 \
+  --set_loss_weight 0.1
+```
 
 The `collapse` sequence mode combines repeated concept rows into one multi-concept question. Set `--max_concepts` to cover the intended concept sets. Use `--fold` values `0` through `4` for five-fold experiments.
 
@@ -151,10 +216,3 @@ Evaluation loads the saved configuration and checkpoint. Outputs include:
 - `test_manifest.tsv` and `window_test_manifest.tsv`: target-alignment records.
 
 Select hyperparameters and checkpoints using validation data before reporting test results.
-
-## Verification
-
-```bash
-pip install pytest
-python -m pytest -q tests
-```
