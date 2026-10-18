@@ -1,115 +1,160 @@
-# RAPLKT
+# RAET-KT
 
-本仓库保留 RAPLKT 的最终正式实现。模型入口为 `pykt.models.raplkt.RAPLKT`，训练和预测分别使用 `examples/wandb_raplkt_train.py` 与 `examples/wandb_raplkt_predict.py`。
+PyTorch implementation of RAET-KT for multi-concept knowledge tracing. The model combines masked-mean multi-concept embeddings, response-dependent responsibility allocation, and parallel evidence memory using a shared AKT backbone.
 
-## 模型
+## Setup
 
-每道题保留最多 `max_concepts` 个 KC。模型根据 question ID 与候选 KC 的独立 Relation embedding 计算 cosine relevance，并用 masked softmax 得到静态题目侧权重 `alpha`：
+The environment is defined in `environment.yml`:
 
-```text
-alpha_relation_qk = softmax(cos(item_relation_q, kc_relation_k) / relation_temperature)
-alpha_mean_qk = 1 / K  (valid KC only; padding = 0)
-alpha_qk = (1 - relation_mix_lambda) * alpha_mean_qk
-           + relation_mix_lambda * alpha_relation_qk
-q = sum_k(alpha_qk * kc_embedding_k)
-```
-
-`relation_mix_lambda` 是固定超参数，不参与梯度更新，取值范围为 `[0, 1]`，默认值为 `1.0`。`0` 表示 uniform mean pooling，`1` 表示 pure Relation，中间值为线性插值。最终 `alpha` 统一组合当前题目的 KC representation 和 KC difficulty。模型随后执行第一遍共享 AKT，得到 KC 局部成功证据 `p_k`。错误作答的学生侧责任为：
-
-```text
-rho_k = softmax_k(log(1 - p_k) / responsibility_temperature)
-```
-
-`responsibility_temperature` 必须为正数，默认值为 `1.0`；此时公式严格退化为原来的 `normalize(1 - p)`。小于 `1.0` 时责任分布更尖锐，大于 `1.0` 时更平滑。正确作答按有效 KC 数量均分成功证据，每个 KC 增加 `1/K`；错误作答按 `rho` 分配失败证据。两种情况下单道有效题目的总证据量均恒为 1。历史 Beta 状态通过 `scatter_add` 和 exclusive cumulative sum 并行构造，当前题证据不会进入当前题预测。第二遍共享 AKT 复用 Relation-aware 当前题 query；历史 interaction 及其 difficulty 始终由责任权重路由。训练目标为题级 KT BCE、KC 集合部分标签损失和难度正则项之和：
-
-```text
-loss = kt_loss + set_loss_weight * set_loss + regularization
-P(question correct) = product_k(p_k)
-```
-
-模型没有沿时间步执行的 Python recurrence。两遍 AKT 均保留 causal mask，Beta 使用 exclusive prefix。
-
-## 数据
-
-数据配置位于 `configs/data_config.json`。多 KC 序列由 RAPLKT 数据加载器生成，支持：
-
-- `collapse`：将同一题的 KC 记录合并为一道多 KC 题，正式实验推荐使用。
-- `preserve`：保留输入中的题级序列边界。
-
-首次运行会在数据目录生成与参数对应的缓存。更换 `max_concepts`、`sequence_mode` 或预处理数据后会使用新的缓存键。
-
-## AutoDL 训练
-
-在项目根目录执行：
+- Python 3.10
+- PyTorch 2.11.0
+- NumPy 1.26.4
+- Pandas 2.2.2
+- Scikit-learn 1.5.2
 
 ```bash
-cd /root/autodl-tmp/RAPLKT
-export PYTHONPATH="$PWD"
-CUDA_VISIBLE_DEVICES=0 python -u examples/wandb_raplkt_train.py \
-  --dataset_name assist2017 \
-  --emb_type qid \
-  --save_dir saved_model_raplkt_relation \
-  --seed 3407 \
-  --fold 0 \
-  --d_model 256 \
-  --d_ff 256 \
-  --num_attn_heads 4 \
-  --n_blocks 2 \
-  --dropout 0.1 \
-  --learning_rate 0.0001 \
-  --batch_size 64 \
-  --num_epochs 200 \
-  --early_stop_rounds 10 \
-  --early_stop_min_delta 0.001 \
-  --max_concepts 2 \
-  --sequence_mode collapse \
-  --evidence_prior_alpha 1.0 \
-  --evidence_prior_beta 1.0 \
-  --relation_dim 32 \
-  --relation_temperature 1.0 \
-  --relation_mix_lambda 1.0 \
+git clone https://github.com/Zhangcantprogram/RAET-KT.git
+cd RAET-KT
+conda env create -f environment.yml
+conda activate raet
+pip install -e .
+```
+
+The supplied environment uses the CUDA 12.8 package index. Run the commands below from the project root unless stated otherwise.
+
+## File Structure
+
+```text
+RAET-KT/
+|-- configs/
+|   |-- data_config.json          # Dataset paths and sequence metadata
+|   |-- kt_config.json            # Training settings and AKT configuration
+|   `-- best_model.json           # Optional checkpoint registry
+|-- data/                         # Downloaded and processed datasets
+|-- examples/
+|   |-- data_preprocess.py        # Preprocessing entry point
+|   |-- wandb_raetkt_train.py      # RAET-KT training
+|   `-- wandb_raetkt_predict.py    # Checkpoint evaluation
+|-- pykt/
+|   |-- datasets/                 # Sequence loading and multi-concept alignment
+|   |-- models/
+|   |   |-- raetkt.py             # RAET-KT model
+|   |   |-- raetkt_train_model.py # Training objective and evaluation
+|   |   `-- akt.py                # Shared AKT backbone
+|   |-- preprocess/               # Three dataset adapters and shared utilities
+|   `-- utils/                    # Reproducibility and logging utilities
+|-- tests/                        # Model, preprocessing, and protocol checks
+|-- environment.yml
+`-- setup.py
+```
+
+Question embeddings and question-side difficulty embeddings average only valid KCs; padding is excluded.
+
+The Python model class is `pykt.models.raetkt.RAETKT`; its configuration identifier is `raetkt`.
+
+## Data and Data Preprocessing
+
+This release supports Algebra2005, ASSISTments2017, and an EdNet-KT1 subset of 5,000 students. Raw datasets, processed sequences, and trained weights are not included.
+
+Place raw data under `data/`:
+
+| Dataset | Input |
+| --- | --- |
+| Algebra2005 | `data/algebra2005/algebra_2005_2006_train.txt` |
+| ASSISTments2017 | `data/assist2017/anonymized_full_release_competition_dataset.csv` |
+| EdNet-KT1 | Student CSV files, question metadata, and the subset manifest described below |
+
+### Algebra2005 and ASSISTments2017
+
+Run preprocessing from `examples/`:
+
+```bash
+cd examples
+python data_preprocess.py --dataset_name algebra2005
+python data_preprocess.py --dataset_name assist2017
+cd ..
+```
+
+Use `--file_path` to specify a different raw input. Shared preprocessing creates training, validation, test, and window-test sequences and updates `configs/data_config.json`. The default settings are five folds, a minimum sequence length of 3, and a maximum length of 200.
+
+### EdNet-KT1
+
+The adapter is `pykt/preprocess/ednet_kt1_preprocess_20260826_010359.py`. It reads a deterministic subset manifest and the original student and question files.
+
+To create a manifest, place student CSV files in `data/ednet/KT1/` and question metadata in `data/ednet/contents/questions.csv`, then run this Python code from the project root:
+
+```python
+from pathlib import Path
+from pykt.preprocess.ednet_kt1_preprocess_20260826_010359 import (
+    load_question_metadata, select_students, write_subset_manifest,
+)
+
+raw_dir = Path("data/ednet/KT1")
+questions_csv = Path("data/ednet/contents/questions.csv")
+student_files = sorted(raw_dir.glob("u*.csv"))
+metadata, _ = load_question_metadata(questions_csv)
+selected, candidate_count = select_students(student_files, metadata)
+write_subset_manifest(
+    selected, candidate_count, raw_dir, questions_csv,
+    Path("data/ednet_kt1_5k/subset"),
+    raw_student_file_count=len(student_files),
+)
+```
+
+Then preprocess the selected students:
+
+```bash
+cd examples
+python data_preprocess.py --dataset_name ednet_kt1_5k --file_path ../data/ednet_kt1_5k/
+cd ..
+```
+
+Reuse the original manifest to reproduce an existing experiment: rebuilding a subset uses the current RAET-KT selection namespace and can select different students. The `ednet` command-line alias resolves to `ednet_kt1_5k`.
+
+## Training and Testing RAET-KT
+
+### Training
+
+For Algebra2005:
+
+```bash
+python examples/wandb_raetkt_train.py \
+  --dataset_name algebra2005 --save_dir saved_model_raetkt \
+  --seed 3407 --fold 0 --d_model 256 --d_ff 256 \
+  --num_attn_heads 4 --n_blocks 2 --dropout 0.1 \
+  --learning_rate 0.0001 --batch_size 64 --num_epochs 200 \
+  --max_concepts 8 --sequence_mode collapse \
   --responsibility_temperature 1.0 \
   --set_loss_weight 0.1
 ```
 
-进行 lambda sweep 时，分别把 `--relation_mix_lambda` 设为 `0`、`0.25`、`0.5`、`0.75`、`1`，并使用不同的 `--save_dir`。只根据 validation AUC 选择每个数据集的 lambda，再报告该 checkpoint 的 test 与 window-test；不得依据 test 指标选择 lambda。
+For ASSISTments2017 or EdNet-KT1, use the same command with `--dataset_name assist2017` or `--dataset_name ednet_kt1_5k`. These commands are runnable starting settings; select dataset-specific hyperparameters using validation performance.
 
-训练结束时终端会打印 `model_save_path`。它所在目录同时包含 `config.json`、最佳 checkpoint 和 `training_summary.json`。
+The `collapse` sequence mode combines repeated concept rows into one multi-concept question. Set `--max_concepts` to cover the intended concept sets. Use `--fold` values `0` through `4` for five-fold experiments.
 
-## AutoDL 预测
+The trainer prints `model_save_path` and saves the run configuration, best validation checkpoint, and `training_summary.json` in the run directory.
 
-将下面的目录替换为训练输出的实际运行目录：
+### Testing
 
-```bash
-cd /root/autodl-tmp/RAPLKT
-export PYTHONPATH="$PWD"
-CUDA_VISIBLE_DEVICES=0 python -u examples/wandb_raplkt_predict.py \
-  --save_dir saved_model_raplkt/assist2017_fold0_seed3407_你的运行哈希 \
-  --bz 256 \
-  --debug_alignment 1 \
-  --debug_responsibility 1 \
-  --responsibility_sample_size 12
-```
-
-预测严格读取训练目录中的配置并使用 `strict=True` 加载权重。结果写入 `qid_evaluation_metrics.json`、题级预测文件和 benchmark manifest；报告包含整体、单 KC、多 KC、受责任历史影响样本、KC 集合似然及责任分布诊断。
-
-## 验证
+Replace the path below with the run directory printed during training:
 
 ```bash
-python -m pytest -q tests/test_raplkt.py
+python examples/wandb_raetkt_predict.py \
+  --save_dir saved_model_raetkt/algebra2005_fold0_seed3407_RUN_ID \
+  --bz 256
 ```
 
+Evaluation loads the saved configuration and checkpoint. Outputs include:
 
-## Data preprocessing
+- `qid_evaluation_metrics.json`: overall and grouped test/window-test metrics.
+- `qid_test_predictions.txt` and `qid_window_test_predictions.txt`: question-level predictions.
+- `test_manifest.tsv` and `window_test_manifest.tsv`: target-alignment records.
 
-Only Algebra2005, ASSIST2017, and EdNet-KT1 5k adapters are included. Shared splitting and utility modules remain required.
+Select hyperparameters and checkpoints using validation data before reporting test results.
 
-Run from `examples/` with the repository root on `PYTHONPATH`:
+## Verification
 
 ```bash
-python data_preprocess.py --dataset_name algebra2005
-python data_preprocess.py --dataset_name assist2017
-python data_preprocess.py --dataset_name ednet_kt1_5k --file_path ../data/ednet_kt1_5k/
+pip install pytest
+python -m pytest -q tests
 ```
-
-The EdNet adapter is `ednet_kt1_preprocess_20260826_010359.py`. It reads an existing dataset directory containing `subset/ednet_kt1_5k_v1_manifest.json`, or a manifest JSON supplied via `--file_path`. Use `--file_path` to override the raw input for any dataset.

@@ -4,7 +4,6 @@ from torch.utils.data import DataLoader
 import numpy as np
 import random as python_random
 # from pykt.datasets.data_loader import KTDataset
-# from pykt.datasets.dkt_forget_dataloader import DktForgetDataset
 
 def set_seed(seed):
     """Set global RNGs and require deterministic PyTorch execution.

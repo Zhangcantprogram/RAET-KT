@@ -13,9 +13,9 @@ from .multikc_protocol import (
 )
 
 
-class RAPLKTDataset(Dataset):
+class RAETKTDataset(Dataset):
     """
-    RAPLKT dataset.
+    RAET-KT dataset.
 
     与原 KTDataset 的主要区别：
     1. 原 KTDataset 读取 cseqs 后仍是单 KC 序列；
@@ -64,7 +64,7 @@ class RAPLKTDataset(Dataset):
             self.raw_q2cs_map,
             self.max_concepts,
         )
-        # RAPLKT reserves 0 for padding; the shared benchmark mapping stays raw.
+        # RAET-KT reserves 0 for padding; the shared benchmark mapping stays raw.
         self.q2cs_map = {
             question + 1: [concept + 1 for concept in concepts]
             for question, concepts in self.raw_q2cs_map.items()
@@ -76,28 +76,28 @@ class RAPLKTDataset(Dataset):
             processed_data = (
                     file_path
                     + folds_str
-                    + f"_raplkt_{self.sequence_mode}_{mapping_signature}_v7_k{max_concepts}.pkl"
+                    + f"_raetkt_{self.sequence_mode}_{mapping_signature}_v7_k{max_concepts}.pkl"
             )
         elif item_window:
             processed_data = (
                     file_path
                     + folds_str
-                    + f"_raplkt_{self.sequence_mode}_itemwin{window_size}_{mapping_signature}_v7_k{max_concepts}.pkl"
+                    + f"_raetkt_{self.sequence_mode}_itemwin{window_size}_{mapping_signature}_v7_k{max_concepts}.pkl"
             )
         else:
             processed_data = (
                     file_path
                     + folds_str
-                    + f"_raplkt_{self.sequence_mode}_{mapping_signature}_v7_k{max_concepts}.pkl"
+                    + f"_raetkt_{self.sequence_mode}_{mapping_signature}_v7_k{max_concepts}.pkl"
             )
         self.processed_data = processed_data
 
         if not os.path.exists(processed_data):
-            print(f"Start preprocessing RAPLKT data: {file_path}, folds: {folds_str}")
+            print(f"Start preprocessing RAET-KT data: {file_path}, folds: {folds_str}")
             self.dori = self.__load_data__(file_path, self.folds)
             pd.to_pickle(self.dori, processed_data)
         else:
-            print(f"Read RAPLKT data from processed file: {processed_data}")
+            print(f"Read RAET-KT data from processed file: {processed_data}")
             self.dori = pd.read_pickle(processed_data)
 
         print(
@@ -582,7 +582,7 @@ class RAPLKTDataset(Dataset):
         dori["masks"] = masks
         dori["smasks"] = smasks
 
-        print(f"RAPLKT item-level interaction num: {int(smasks.sum().item())}")
+        print(f"RAET-KT item-level interaction num: {int(smasks.sum().item())}")
         return dori
 
     def __getitem__(self, index):

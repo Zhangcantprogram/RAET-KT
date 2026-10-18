@@ -5,4 +5,4 @@ from .item_level_metrics import (
     assert_same_benchmark_targets,
     compute_item_level_metrics,
 )
-from .raplkt import RAPLKT
+from .raetkt import RAETKT

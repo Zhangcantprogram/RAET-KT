@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .raplkt_data_loader import RAPLKTDataset
+from .raetkt_data_loader import RAETKTDataset
 from .multikc_protocol import build_raw_q2cs_map
 
 
@@ -15,7 +15,7 @@ def _seed_worker(_worker_id):
     np.random.seed(worker_seed)
 
 
-def init_raplkt_dataset4train(
+def init_raetkt_dataset4train(
     dataset_name,
     data_config,
     fold,
@@ -28,12 +28,12 @@ def init_raplkt_dataset4train(
     all_folds = set(cfg["folds"])
     train_valid_path = os.path.join(cfg["dpath"], cfg["train_valid_file"])
 
-    # q2cs_train_valid = RAPLKTDataset.build_q2cs_map(
+    # q2cs_train_valid = RAETKTDataset.build_q2cs_map(
     #     train_valid_path,
     #     folds=all_folds,
     # )
 
-    curvalid = RAPLKTDataset(
+    curvalid = RAETKTDataset(
         train_valid_path,
         cfg["input_type"],
         {fold},
@@ -42,7 +42,7 @@ def init_raplkt_dataset4train(
         q2cs_map=None,
     )
 
-    curtrain = RAPLKTDataset(
+    curtrain = RAETKTDataset(
         train_valid_path,
         cfg["input_type"],
         all_folds - {fold},
@@ -75,7 +75,7 @@ def init_raplkt_dataset4train(
     return train_loader, valid_loader, None, None
 
 
-def init_raplkt_test_datasets(
+def init_raetkt_test_datasets(
     data_config,
     batch_size,
     max_concepts=8,
@@ -91,7 +91,7 @@ def init_raplkt_test_datasets(
 
     # 普通 test 不需要 q2cs_map。
     # test_sequences.csv 本身已经包含完整 multi-KC block。
-    test_dataset = RAPLKTDataset(
+    test_dataset = RAETKTDataset(
         test_path,
         data_config["input_type"],
         {-1},
@@ -108,7 +108,7 @@ def init_raplkt_test_datasets(
         max_concepts=max_concepts,
     )
 
-    test_window_dataset = RAPLKTDataset(
+    test_window_dataset = RAETKTDataset(
         test_window_path,
         data_config["input_type"],
         {-1},

@@ -9,9 +9,9 @@ from pathlib import Path
 
 import torch
 
-from pykt.datasets.init_raplkt_dataset import init_raplkt_test_datasets
-from pykt.models.raplkt import RAPLKT_VERSION, RAPLKT
-from pykt.models.raplkt_train_model import evaluate_raplkt, validate_set_loss_weight
+from pykt.datasets.init_raetkt_dataset import init_raetkt_test_datasets
+from pykt.models.raetkt import RAETKT_VERSION, RAETKT
+from pykt.models.raetkt_train_model import evaluate_raetkt, validate_set_loss_weight
 from pykt.utils import set_seed
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,27 +31,24 @@ def _json_safe(value):
 def main(params):
     if "set_loss_weight" in params:
         raise ValueError("Prediction cannot override training set_loss_weight.")
-    if ("relation_dim" in params or "relation_temperature" in params
-            or "relation_mix_lambda" in params):
-        raise ValueError("Prediction cannot override training Relation parameters.")
     if "responsibility_temperature" in params:
         raise ValueError("Prediction cannot override training responsibility temperature.")
     save_dir = Path(params["save_dir"])
     with (save_dir / "config.json").open(encoding="utf8") as stream:
         config = json.load(stream)
     trained = config["params"]
-    if trained.get("model_name") != "raplkt":
-        raise ValueError("This predictor only accepts model_name=raplkt.")
-    if trained.get("architecture_version") != RAPLKT_VERSION:
-        raise ValueError("Checkpoint is not formal RAPLKT; retrain with the current training script.")
+    if trained.get("model_name") != "raetkt":
+        raise ValueError("This predictor only accepts model_name=raetkt.")
+    if trained.get("architecture_version") != RAETKT_VERSION:
+        raise ValueError("Checkpoint is not formal RAET-KT; retrain with the current training script.")
     weight = validate_set_loss_weight(trained["set_loss_weight"])
     if (trained.get("responsibility_rule") != "normalized_failure_evidence"
             or trained.get("correct_credit_rule") != "uniform_1_over_k"
             or trained.get("incorrect_credit_rule") != "normalized_failure_responsibility"
             or trained.get("set_level_partial_label") is not True):
         raise ValueError("Checkpoint does not declare the required set-level training protocol.")
-    if trained.get("question_aggregation") != "fixed_mean_relation_mix":
-        raise ValueError("Checkpoint does not use formal item-side Relation aggregation.")
+    if trained.get("question_aggregation") != "mean":
+        raise ValueError("Checkpoint does not use masked-mean KC aggregation.")
     set_seed(trained["seed"])
     with (ROOT / "configs/data_config.json").open(encoding="utf8") as stream:
         data_config = json.load(stream)[trained["dataset_name"]]
@@ -61,22 +58,19 @@ def main(params):
     if (model_config["n_question"], model_config["n_pid"]) != (data_config["num_c"], data_config["num_q"]):
         raise ValueError("Checkpoint vocabulary sizes disagree with dataset configuration.")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = RAPLKT(**model_config).to(device)
+    model = RAETKT(**model_config).to(device)
     checkpoint_path = save_dir / (trained["emb_type"] + "_model.ckpt")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(checkpoint, strict=True)
-    test_loader, window_loader, *_ = init_raplkt_test_datasets(
+    test_loader, window_loader, *_ = init_raetkt_test_datasets(
         data_config, params["bz"], max_concepts=trained["max_concepts"],
         sequence_mode=trained["sequence_mode"], seed=trained["seed"])
     report = {
-        "model_name": "raplkt", "dataset_name": trained["dataset_name"],
+        "model_name": "raetkt", "dataset_name": trained["dataset_name"],
         "fold": trained["fold"], "seed": trained["seed"],
         "sequence_mode": trained["sequence_mode"], "max_concepts": trained["max_concepts"],
-        "architecture_version": RAPLKT_VERSION,
-        "question_aggregation": "fixed_mean_relation_mix",
-        "relation_dim": model.relation_dim,
-        "relation_temperature": model.relation_temperature,
-        "relation_mix_lambda": model.relation_mix_lambda,
+        "architecture_version": RAETKT_VERSION,
+        "question_aggregation": "mean",
         "responsibility_temperature": model.responsibility_temperature,
         "responsibility_rule": "normalized_failure_evidence",
         "correct_credit_rule": "uniform_1_over_k",
@@ -88,7 +82,7 @@ def main(params):
         "evidence_prior_beta": model.evidence_prior_beta,
         "checkpoint_path": str(checkpoint_path)}
     for split, loader in (("test", test_loader), ("window_test", window_loader)):
-        report[split] = evaluate_raplkt(
+        report[split] = evaluate_raetkt(
             model, loader, save_path=str(save_dir / f"qid_{split}_predictions.txt"),
             split_name=split, return_group_metrics=True,
             debug_alignment=bool(params.get("debug_alignment", 0)),
@@ -105,7 +99,7 @@ def main(params):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate a formal RAPLKT checkpoint")
+    parser = argparse.ArgumentParser(description="Evaluate a formal RAET-KT checkpoint")
     parser.add_argument("--save_dir", required=True)
     parser.add_argument("--bz", type=int, default=256)
     parser.add_argument("--debug_alignment", type=int, choices=[0, 1], default=0)

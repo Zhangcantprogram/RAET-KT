@@ -11,9 +11,9 @@ from pathlib import Path
 import torch
 from torch.optim import Adam, SGD
 
-from pykt.datasets.init_raplkt_dataset import init_raplkt_dataset4train
-from pykt.models.raplkt import RAPLKT_VERSION, RAPLKT
-from pykt.models.raplkt_train_model import train_raplkt_model, validate_set_loss_weight
+from pykt.datasets.init_raetkt_dataset import init_raetkt_dataset4train
+from pykt.models.raetkt import RAETKT_VERSION, RAETKT
+from pykt.models.raetkt_train_model import train_raetkt_model, validate_set_loss_weight
 from pykt.utils import set_seed
 
 torch.set_num_threads(4)
@@ -21,10 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="RAPLKT: differentiable parallel evidence memory")
+    parser = argparse.ArgumentParser(description="RAET-KT: differentiable parallel evidence memory")
     parser.add_argument("--dataset_name", default="assist2017")
     parser.add_argument("--emb_type", choices=["qid"], default="qid")
-    parser.add_argument("--save_dir", default="saved_model_raplkt")
+    parser.add_argument("--save_dir", default="saved_model_raetkt")
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--fold", type=int, default=0)
     parser.add_argument("--dropout", type=float, default=.1)
@@ -41,9 +41,6 @@ def build_parser():
     parser.add_argument("--sequence_mode", choices=["collapse", "preserve"], default="collapse")
     parser.add_argument("--evidence_prior_alpha", type=float, default=1.)
     parser.add_argument("--evidence_prior_beta", type=float, default=1.)
-    parser.add_argument("--relation_dim", type=int, default=32)
-    parser.add_argument("--relation_temperature", type=float, default=1.0)
-    parser.add_argument("--relation_mix_lambda", type=float, default=1.0)
     parser.add_argument("--responsibility_temperature", type=float, default=1.0)
     parser.add_argument("--set_loss_weight", type=float, default=0.1)
     return parser
@@ -53,12 +50,12 @@ def main(params):
     params = dict(params)
     params.setdefault("responsibility_temperature", 1.0)
     params["set_loss_weight"] = validate_set_loss_weight(params["set_loss_weight"])
-    params = dict(params, model_name="raplkt", architecture_version=RAPLKT_VERSION,
+    params = dict(params, model_name="raetkt", architecture_version=RAETKT_VERSION,
                   responsibility_rule="normalized_failure_evidence",
                   correct_credit_rule="uniform_1_over_k",
                   incorrect_credit_rule="normalized_failure_responsibility",
                   set_level_partial_label=True,
-                  question_aggregation="fixed_mean_relation_mix")
+                  question_aggregation="mean")
     set_seed(params["seed"])
     with (ROOT / "configs/kt_config.json").open(encoding="utf8") as stream:
         train_config = json.load(stream)["train_config"]
@@ -70,16 +67,15 @@ def main(params):
     data_config = data_all[params["dataset_name"]]
     # V1.5 paths are relative to examples/, independently of invocation cwd.
     data_config["dpath"] = str((ROOT / "examples" / data_config["dpath"]).resolve())
-    train_loader, valid_loader, *_ = init_raplkt_dataset4train(
+    train_loader, valid_loader, *_ = init_raetkt_dataset4train(
         params["dataset_name"], data_all, params["fold"], params["batch_size"],
         max_concepts=params["max_concepts"], sequence_mode=params["sequence_mode"],
         seed=params["seed"])
     model_config = {key: params[key] for key in (
         "d_model", "d_ff", "num_attn_heads", "n_blocks", "dropout", "emb_type",
-        "evidence_prior_alpha", "evidence_prior_beta", "relation_dim",
-        "relation_temperature", "relation_mix_lambda", "responsibility_temperature")}
+        "evidence_prior_alpha", "evidence_prior_beta", "responsibility_temperature")}
     model_config.update(n_question=data_config["num_c"], n_pid=data_config["num_q"])
-    model = RAPLKT(**model_config).to("cuda" if torch.cuda.is_available() else "cpu")
+    model = RAETKT(**model_config).to("cuda" if torch.cuda.is_available() else "cpu")
     # Short, deterministic directory names avoid filesystem component limits.
     digest = hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()[:12]
     checkpoint_dir = Path(params["save_dir"]) / (
@@ -98,7 +94,7 @@ def main(params):
     print(f"train smasks: {int(train_loader.dataset.dori['smasks'].sum())}")
     print(f"valid smasks: {int(valid_loader.dataset.dori['smasks'].sum())}")
     print(f"model_config: {model_config}")
-    train_raplkt_model(
+    train_raetkt_model(
         model, train_loader, valid_loader, train_config["num_epochs"], optimizer,
         str(checkpoint_dir), save_model=True, early_stop_rounds=params["early_stop_rounds"],
         early_stop_min_delta=params["early_stop_min_delta"],

@@ -18,7 +18,7 @@ from .utils import format_list2str, replace_text, write_txt
 ROOT = Path(__file__).resolve().parents[2]
 DATASET_NAME = "ednet_kt1_5k"
 SUBSET_NAME = "ednet_kt1_5k_v1"
-SELECTION_NAMESPACE = "RAPLKT_EDNET_KT1_5K_V1"
+SELECTION_NAMESPACE = "RAETKT_EDNET_KT1_5K_V1"
 SELECTION_SEED = 3407
 TARGET_STUDENTS = 5000
 STUDENT_PATTERN = re.compile(r"^u([0-9]+)\.csv$", re.IGNORECASE)

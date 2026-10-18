@@ -10,7 +10,7 @@ def build_question_to_skills(df):
 
     The shared pyKT preprocessing pipeline represents a multi-KC item by
     joining its concepts with ``_``.  ``extend_multi_concepts`` later expands
-    that value and creates the ``is_repeat`` markers consumed by RAPLKT.
+    that value and creates the ``is_repeat`` markers consumed by RAETKT.
 
     ASSISTments 2017 stores only one skill on each interaction row, although
     the same problem can be tagged with different skills on other rows.  We

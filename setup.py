@@ -1,9 +1,9 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="rapl",
+    name="raet",
     version="0.1.0",
-    description="Minimal AKT-only implementation based on pyKT toolkit",
+    description="RAET-KT for multi-concept knowledge tracing with an AKT backbone",
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[

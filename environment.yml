@@ -1,4 +1,4 @@
-name: rapl
+name: raet
 channels:
   - conda-forge
   - defaults

@@ -1,4 +1,4 @@
-"""Item-level training and evaluation for RAPLKT on the V1.5 protocol."""
+"""Item-level training and evaluation for RAETKT on the V1.5 protocol."""
 import os
 import json
 import math
@@ -89,7 +89,7 @@ def _build_full_sequences(data, device):
     return cq, cc, cm, cr, data["shft_rseqs"].to(device), sm.bool(), updates.bool()
 
 
-def raplkt_model_forward(model, data, set_loss_weight=0.1, return_losses=False):
+def raetkt_model_forward(model, data, set_loss_weight=0.1, return_losses=False):
     set_loss_weight = validate_set_loss_weight(set_loss_weight)
     cq, cc, cm, cr, shifted_r, sm, updates = _build_full_sequences(
         data, next(model.parameters()).device)
@@ -132,27 +132,6 @@ def compute_responsibility_statistics(entropy, effective_k, k_count, tv, max_rho
     return result
 
 
-def compute_relation_statistics(entropy, max_alpha, tv, k_count):
-    """Summarize item-side Relation weights on selected multi-KC targets."""
-    arrays = [np.asarray(value).reshape(-1) for value in
-              (entropy, max_alpha, tv, k_count)]
-    if len({len(value) for value in arrays}) != 1:
-        raise ValueError("Relation diagnostic arrays must be aligned.")
-    entropy, max_alpha, tv, k_count = arrays
-    result = {}
-    for name, selector in (("k2", k_count == 2), ("k3plus", k_count >= 3),
-                           ("multi", k_count >= 2)):
-        values = {"n": int(selector.sum())}
-        for key, array in (("relation_entropy", entropy),
-                           ("max_alpha", max_alpha),
-                           ("tv_from_uniform", tv)):
-            selected = array[selector]
-            values["mean_" + key] = (
-                float(selected.mean()) if selected.size else float("nan"))
-            values["median_" + key] = (
-                float(np.median(selected)) if selected.size else float("nan"))
-        result[name] = values
-    return result
 
 
 def compute_calibration_statistics(k_count, max_rho, mean_p, min_p, max_p, p_gap, mastery_gap):
@@ -179,7 +158,7 @@ def compute_calibration_statistics(k_count, max_rho, mean_p, min_p, max_p, p_gap
     return probability, strength
 
 
-def evaluate_raplkt(model, test_loader, save_path="", split_name=None,
+def evaluate_raetkt(model, test_loader, save_path="", split_name=None,
                          return_group_metrics=False, debug_alignment=False,
                          debug_responsibility=False, responsibility_sample_size=12,
                          responsibility_sample_seed=3407, manifest_path=None,
@@ -191,8 +170,6 @@ def evaluate_raplkt(model, test_loader, save_path="", split_name=None,
               torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     truths, scores, counts, affected_flags = [], [], [], []
     diagnostics = {key: [] for key in ("entropy", "effective_k", "k", "tv", "max_rho")}
-    relation_diagnostics = {key: [] for key in ("entropy", "max_alpha", "tv", "k")}
-    raw_relation_diagnostics = {key: [] for key in ("entropy", "max_alpha", "tv", "k")}
     calibration = {key: [] for key in ("mean_p", "min_p", "max_p", "p_gap", "mastery_gap")}
     set_scores, set_nlls, correct_min_p, correct_products = [], [], [], []
     records, samples = [], []
@@ -220,22 +197,6 @@ def evaluate_raplkt(model, test_loader, save_path="", split_name=None,
             tv = .5 * (rho - uniform).abs().sum(-1)
             maximum = rho.max(-1).values
             valid = cm[:, 1:].bool()
-            relation_weight = details["question_weights"][:, 1:]
-            raw_relation_weight = details["question_relation_raw_weights"][:, 1:]
-            relation_uniform = valid.to(relation_weight.dtype) / k.unsqueeze(-1).clamp_min(1)
-            relation_tv = .5 * (relation_weight - relation_uniform).abs().sum(-1)
-            raw_relation_tv = .5 * (raw_relation_weight - relation_uniform).abs().sum(-1)
-            selected_multi = sm & (k >= 2)
-            for key, value in (
-                    ("entropy", details["question_weight_entropy"][:, 1:]),
-                    ("max_alpha", details["question_weight_max"][:, 1:]),
-                    ("tv", relation_tv), ("k", k)):
-                relation_diagnostics[key].append(value[selected_multi].cpu().numpy())
-            for key, value in (
-                    ("entropy", details["question_relation_raw_entropy"][:, 1:]),
-                    ("max_alpha", details["question_relation_raw_max"][:, 1:]),
-                    ("tv", raw_relation_tv), ("k", k)):
-                raw_relation_diagnostics[key].append(value[selected_multi].cpu().numpy())
             probs = details["kc_probs"][:, 1:]
             mastery = details["mastery_mean"][:, 1:]
             min_p = probs.masked_fill(~valid, float("inf")).min(-1).values
@@ -274,7 +235,7 @@ def evaluate_raplkt(model, test_loader, save_path="", split_name=None,
                         "kc_ids": ",".join(str(v - offset) for v in sorted(kc_ids)),
                         "k_count": int(selected_k[index]), "prediction": float(pred[index])})
             if debug_alignment and not alignment_printed:
-                print("RAPLKT alignment debug (first selected positions):")
+                print("RAETKT alignment debug (first selected positions):")
                 for index, (b, s) in enumerate(sm.nonzero().tolist()[:10]):
                     print(f"    batch={b} shifted_pos={s} target={int(true[index])} "
                           f"pred={pred[index]:.6f} k_count={selected_k[index]}")
@@ -296,8 +257,6 @@ def evaluate_raplkt(model, test_loader, save_path="", split_name=None,
                         "candidate_kc_ids": ids,
                         "pre_response_mastery": details["mastery_mean"][b, s + 1][valid].cpu().tolist(),
                         "kc_probs": details["kc_probs"][b, s + 1][valid].cpu().tolist(),
-                        "question_weights": details["question_weights"][b, s + 1][valid].cpu().tolist(),
-                        "alpha_relation": details["question_relation_raw_weights"][b, s + 1][valid].cpu().tolist(),
                         "rho": weights, "max_responsible_kc": ids[int(np.argmax(weights))],
                         "responsibility_entropy": float(details["responsibility_entropy"][b, s + 1]),
                         "effective_k": float(details["effective_k"][b, s + 1]),
@@ -327,13 +286,6 @@ def evaluate_raplkt(model, test_loader, save_path="", split_name=None,
     results["affected_ratio"] = float(affected.mean()) if affected.size else 0.0
     results["responsibility"] = compute_responsibility_statistics(
         *(concatenate(diagnostics[key]) for key in ("entropy", "effective_k", "k", "tv", "max_rho")))
-    results["question_relation"] = compute_relation_statistics(
-        *(concatenate(relation_diagnostics[key])
-          for key in ("entropy", "max_alpha", "tv", "k")))
-    results["question_relation_raw"] = compute_relation_statistics(
-        *(concatenate(raw_relation_diagnostics[key])
-          for key in ("entropy", "max_alpha", "tv", "k")))
-    results["relation_mix_lambda"] = model.relation_mix_lambda
     results["responsibility_configuration"] = {
         "rule": "normalize(1-p)", "set_level_partial_label_loss": True,
         "set_loss_weight": set_loss_weight}
@@ -362,15 +314,6 @@ def evaluate_raplkt(model, test_loader, save_path="", split_name=None,
             print(f"Incorrect {name} Responsibility ({split_name}):")
             for key, value in values.items():
                 print(f"    {key}={value}")
-        for name, values in results["question_relation"].items():
-            print(f"Final Question Weight {name} ({split_name}):")
-            for key, value in values.items():
-                print(f"    {key}={value}")
-        for name, values in results["question_relation_raw"].items():
-            print(f"Raw Question Relation {name} ({split_name}):")
-            for key, value in values.items():
-                print(f"    {key}={value}")
-        print(f"Relation mix lambda ({split_name}): {results['relation_mix_lambda']}")
         for name, values in results["kc_probability"].items():
             print(f"Incorrect {name} KC probability ({split_name}): {values}")
         for name, values in results["responsibility_strength_k2"].items():
@@ -391,7 +334,7 @@ def print_set_level_metrics(results, split_name):
     print(f"Correct multi-KC evidence ({split_name}): {results['correct_multi_kc_probability']}")
 
 
-def train_raplkt_model(
+def train_raetkt_model(
     model,
     train_loader,
     valid_loader,
@@ -422,7 +365,7 @@ def train_raplkt_model(
         selected_items = 0
 
         for data in train_loader:
-            loss, components = raplkt_model_forward(
+            loss, components = raetkt_model_forward(
                 model, data, set_loss_weight, return_losses=True)
 
             opt.zero_grad()
@@ -440,7 +383,7 @@ def train_raplkt_model(
         loss_mean = float(np.mean(loss_mean))
 
         component_means = {key: value / max(selected_items, 1) for key, value in component_sums.items()}
-        validation = evaluate_raplkt(model, valid_loader, return_group_metrics=True,
+        validation = evaluate_raetkt(model, valid_loader, return_group_metrics=True,
                                               set_loss_weight=set_loss_weight)
         validauc, validacc = validation["overall"]["auc"], validation["overall"]["acc"]
         print_set_level_metrics(validation, "valid")

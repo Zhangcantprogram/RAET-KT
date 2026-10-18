@@ -31,7 +31,7 @@ def get_runs_result(runs):
 class WandbUtils:
     """wandb utils
 
-    wandb_api = WandbUtils(user='tabchen', project_name='pykt_iekt_pred')
+    wandb_api = WandbUtils(user='your_username', project_name='raetkt_prediction')
     >self.sweep_dict is {'mx2tvwfy': ['mx2tvwfy']}
     
     """

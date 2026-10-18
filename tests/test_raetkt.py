@@ -10,9 +10,9 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
-from pykt.models.raplkt import RAPLKT, RAPLKT_VERSION
-from pykt.models.raplkt_train_model import (
-    compute_set_level_partial_loss, raplkt_model_forward, validate_set_loss_weight)
+from pykt.models.raetkt import RAETKT, RAETKT_VERSION
+from pykt.models.raetkt_train_model import (
+    compute_set_level_partial_loss, raetkt_model_forward, validate_set_loss_weight)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -22,7 +22,7 @@ SMALL = dict(n_question=8, n_pid=8, d_model=8, n_blocks=1, dropout=0.0,
 
 def make_model(**overrides):
     torch.manual_seed(3407)
-    return RAPLKT(**dict(SMALL, **overrides)).to(DEVICE).eval()
+    return RAETKT(**dict(SMALL, **overrides)).to(DEVICE).eval()
 
 
 def load_script(name):
@@ -111,55 +111,29 @@ def test_responsibility_temperature_validation(temperature):
         make_model(responsibility_temperature=temperature)
 
 
-@pytest.mark.parametrize("lam", [0.0, 0.5, 1.0])
-def test_relation_mix_limits_k1_padding_and_weighted_question(lam):
-    model = make_model(relation_dim=2, relation_mix_lambda=lam)
+def test_masked_mean_k1_multi_padding_and_empty_item():
+    model = make_model()
     with torch.no_grad():
-        model.item_relation_embed.weight.zero_()
-        model.kc_relation_embed.weight.zero_()
-        model.item_relation_embed.weight[1] = torch.tensor([1.0, 0.0], device=DEVICE)
-        model.kc_relation_embed.weight[1] = torch.tensor([1.0, 0.0], device=DEVICE)
-        model.kc_relation_embed.weight[2] = torch.tensor([0.0, 1.0], device=DEVICE)
-        model.q_embed.weight[1] = torch.tensor([1.0] * 8, device=DEVICE)
-        model.q_embed.weight[2] = torch.tensor([3.0] * 8, device=DEVICE)
-    concepts = torch.tensor([[[1, 0, 0, 0], [1, 2, 0, 0]]], device=DEVICE)
-    mask = concepts != 0
-    questions = torch.tensor([[1, 1]], device=DEVICE)
-    question, candidates, alpha, alpha_relation, alpha_mean = model._relation_question_embedding(
-        concepts, mask, questions)
-    torch.testing.assert_close(alpha[0, 0], torch.tensor([1., 0., 0., 0.], device=DEVICE))
-    expected_relation = torch.softmax(torch.tensor([1., 0.], device=DEVICE), dim=0)
-    torch.testing.assert_close(alpha_relation[0, 1, :2], expected_relation)
-    expected_mean = torch.tensor([0.5, 0.5, 0., 0.], device=DEVICE)
-    torch.testing.assert_close(alpha_mean[0, 1], expected_mean)
-    expected_alpha = (1.0 - lam) * expected_mean[:2] + lam * expected_relation
-    torch.testing.assert_close(alpha[0, 1, :2], expected_alpha)
-    assert not alpha[0, 1, 2:].any()
-    assert not alpha_relation[0, 1, 2:].any()
-    assert not alpha_mean[0, 1, 2:].any()
-    torch.testing.assert_close(alpha[0, 1].sum(), torch.tensor(1., device=DEVICE))
-    expected_question = expected_alpha[0] * candidates[0, 1, 0] + expected_alpha[1] * candidates[0, 1, 1]
-    torch.testing.assert_close(question[0, 1], expected_question)
-    if lam == 0.0:
-        assert torch.equal(alpha, alpha_mean)
-        torch.testing.assert_close(question[0, 1], candidates[0, 1, :2].mean(0))
-    if lam == 0.5:
-        torch.testing.assert_close(alpha, 0.5 * alpha_mean + 0.5 * alpha_relation)
-    if lam == 1.0:
-        assert torch.equal(alpha, alpha_relation)
+        model.q_embed.weight[0].fill_(1000.0)
+        model.q_embed.weight[1].fill_(1.0)
+        model.q_embed.weight[2].fill_(3.0)
+        model.q_embed.weight[3].fill_(8.0)
+    concepts = torch.tensor(
+        [[[1, 0, 0, 0], [1, 2, 0, 0], [1, 2, 3, 0], [0, 0, 0, 0]]],
+        device=DEVICE)
+    question, candidates = model._uniform_question_embedding(concepts, concepts != 0)
+    expected = torch.tensor([[[1.0] * 8, [2.0] * 8, [4.0] * 8, [0.0] * 8]],
+                            device=DEVICE)
+    torch.testing.assert_close(question, expected)
+    permuted, _ = model._uniform_question_embedding(
+        concepts.flip(-1), concepts.flip(-1) != 0)
+    torch.testing.assert_close(question, permuted)
+    question.sum().backward()
+    assert model.q_embed.weight.grad[0].abs().sum() == 0
+    assert torch.isfinite(model.q_embed.weight.grad).all()
 
 
-def test_relation_mix_is_fixed_validated_hyperparameter():
-    model = make_model(relation_mix_lambda=0.25)
-    assert model.relation_mix_lambda == 0.25
-    assert "relation_mix_lambda" not in dict(model.named_parameters())
-    assert not hasattr(model, "relation_gate_logit")
-    for value in (-0.01, 1.01, float("nan"), float("inf")):
-        with pytest.raises(ValueError, match="relation_mix_lambda"):
-            make_model(relation_mix_lambda=value)
-
-
-def test_relation_is_response_and_history_independent():
+def test_mean_query_is_response_and_history_independent():
     model = make_model()
     concepts = torch.tensor([[[1, 2], [3, 4], [1, 2]],
                              [[5, 6], [7, 8], [1, 2]]], device=DEVICE)
@@ -168,18 +142,15 @@ def test_relation_is_response_and_history_independent():
                   questions, return_details=True)[2]
     second = model(concepts, torch.tensor([[1, 1, 1], [0, 0, 0]], device=DEVICE),
                    questions, return_details=True)[2]
-    for key in ("question_weights", "question_relation_raw_weights", "question_mean_weights"):
-        torch.testing.assert_close(first[key], second[key], atol=0, rtol=0)
-        torch.testing.assert_close(first[key][0, 2], first[key][1, 2], atol=0, rtol=0)
-    assert first["relation_mix_lambda"] == model.relation_mix_lambda
+    torch.testing.assert_close(first["q_embed"], second["q_embed"], atol=0, rtol=0)
+    torch.testing.assert_close(first["q_embed"][0, 2], first["q_embed"][1, 2], atol=0, rtol=0)
 
 
-def test_alpha_current_side_and_rho_history_side_are_separate():
-    model = make_model(relation_dim=2)
+def test_mean_current_side_and_responsibility_history_side_are_separate():
+    model = make_model()
     concepts = torch.tensor([[[1, 2]]], device=DEVICE)
     responses = torch.tensor([[0]], device=DEVICE)
     questions = torch.tensor([[1]], device=DEVICE)
-    alpha = torch.tensor([[[0.9, 0.1]]], device=DEVICE)
     rho = torch.tensor([[[0.2, 0.8]]], device=DEVICE)
     with torch.no_grad():
         model.q_embed.weight.zero_()
@@ -194,10 +165,7 @@ def test_alpha_current_side_and_rho_history_side_are_separate():
         for parameter in model.beta_state_encoder.parameters():
             parameter.zero_()
     candidates = model.q_embed(concepts)
-    current = model._masked_weighted_sum(candidates, alpha)
-
-    def relation(*_):
-        return current, candidates, alpha, alpha, alpha
+    current = candidates.mean(dim=2)
 
     def evidence(*_):
         return torch.tensor([[[0.8, 0.2]]], device=DEVICE)
@@ -205,33 +173,39 @@ def test_alpha_current_side_and_rho_history_side_are_separate():
     def zero_akt(query, *_):
         return torch.zeros_like(query)
 
-    with patch.object(model, "_relation_question_embedding", side_effect=relation), \
-            patch.object(model, "_compute_kc_evidence", side_effect=evidence), \
+    with patch.object(model, "_compute_kc_evidence", side_effect=evidence), \
             patch.object(model.model, "forward", side_effect=zero_akt):
         details = model(concepts, responses, questions, return_details=True)[2]
     torch.testing.assert_close(details["rho_wrong"], rho)
-    current_diff = model._masked_weighted_sum(model.q_embed_diff(concepts), alpha)
+    current_diff = model.q_embed_diff(concepts).mean(dim=2)
     torch.testing.assert_close(details["q_embed"], current + current_diff)
     historical = model._masked_weighted_sum(
         candidates + model.q_embed_diff(concepts), rho)
     torch.testing.assert_close(details["qa_embed"], historical)
 
 
-def test_relation_mix_does_not_change_responsibility_or_beta_routing():
-    mean_model = make_model(relation_mix_lambda=0.0)
-    relation_model = make_model(relation_mix_lambda=1.0)
-    concepts = torch.tensor([[[1, 2], [1, 2], [2, 3]]], device=DEVICE)
-    mask = concepts != 0
+@pytest.mark.parametrize("separate_qa", [False, True])
+def test_mean_first_pass_without_question_ids(separate_qa):
+    model = make_model(n_pid=0, separate_qa=separate_qa)
+    concepts = torch.tensor([[[1, 2, 0], [2, 3, 4], [0, 0, 0]]], device=DEVICE)
     responses = torch.tensor([[0, 1, 0]], device=DEVICE)
-    updates = torch.ones_like(responses, dtype=torch.bool)
-    probs = torch.tensor([[[0.8, 0.2], [0.7, 0.4], [0.9, 0.3]]], device=DEVICE)
-    mean_mix = mean_model._build_responsibility_trajectory(
-        concepts, mask, responses, updates, probs)
-    relation_mix = relation_model._build_responsibility_trajectory(
-        concepts, mask, responses, updates, probs)
-    for key in ("route_weight", "rho_wrong", "success_update", "failure_update",
-                "success_evidence", "failure_evidence", "beta_state_emb"):
-        torch.testing.assert_close(mean_mix[key], relation_mix[key], atol=0, rtol=0)
+    mask = concepts != 0
+    query = model._masked_mean(model.q_embed(concepts), mask)
+    if separate_qa:
+        ids = concepts + (model.n_question + 1) * responses.unsqueeze(-1)
+        ids = ids.masked_fill(~mask, 0)
+        expected_qa = model._masked_mean(model.qa_embed(ids), mask)
+    else:
+        expected_qa = query + model.qa_embed(responses)
+    expected_qa = expected_qa * mask.any(-1).unsqueeze(-1)
+    with patch.object(model.model, "forward", wraps=model.model.forward) as encoder:
+        prediction, regularization, details = model(
+            concepts, responses, return_details=True)
+    torch.testing.assert_close(encoder.call_args_list[0].args[0], query)
+    torch.testing.assert_close(encoder.call_args_list[0].args[1], expected_qa)
+    torch.testing.assert_close(details["q_embed"], query)
+    assert regularization.item() == 0.0
+    assert torch.isfinite(prediction).all()
 
 
 def test_parallel_exclusive_prefix_and_no_sequence_loop():
@@ -239,11 +213,11 @@ def test_parallel_exclusive_prefix_and_no_sequence_loop():
     expected = torch.zeros_like(delta)
     for step in range(1, delta.shape[1]):
         expected[:, step] = delta[:, :step].sum(1)
-    actual = RAPLKT._exclusive_prefix(delta)
+    actual = RAETKT._exclusive_prefix(delta)
     torch.testing.assert_close(actual, expected)
     actual.sum().backward()
     assert torch.isfinite(delta.grad).all()
-    tree = ast.parse(inspect.getsource(RAPLKT))
+    tree = ast.parse(inspect.getsource(RAETKT))
     checked = {"forward", "_build_responsibility_trajectory", "_exclusive_prefix"}
     for function in (node for node in ast.walk(tree)
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -269,48 +243,50 @@ def test_two_pass_causality_and_end_to_end_gradient(separate_qa):
     grads = torch.autograd.grad(
         loss, tuple(model.kc_evidence.parameters()), retain_graph=True, allow_unused=False)
     assert sum(gradient.abs().sum() for gradient in grads) > 0
-    relation_grads = torch.autograd.grad(
-        loss, (model.item_relation_embed.weight, model.kc_relation_embed.weight),
-        retain_graph=True, allow_unused=False)
-    assert all(torch.isfinite(gradient).all() and gradient.abs().sum() > 0
-               for gradient in relation_grads)
-    assert ".detach(" not in inspect.getsource(RAPLKT)
+    embedding_grad = torch.autograd.grad(
+        loss, model.q_embed.weight, retain_graph=True, allow_unused=False)[0]
+    assert torch.isfinite(embedding_grad).all() and embedding_grad.abs().sum() > 0
+    assert ".detach(" not in inspect.getsource(RAETKT)
 
 
-def test_mean_checkpoint_is_rejected_by_strict_relation_load():
-    reference = torch.load(ROOT / "tests/fixtures/raplkt_formal_reference.pt",
-                           map_location="cpu", weights_only=True)
-    model = RAPLKT(**reference["config"]).to(DEVICE).eval()
-    with pytest.raises(RuntimeError, match="item_relation_embed"):
-        model.load_state_dict(reference["state_dict"], strict=True)
+def test_checkpoint_roundtrip_and_strict_parameter_validation():
+    model = make_model()
+    restored = make_model()
+    restored.load_state_dict(model.state_dict(), strict=True)
+    invalid_state = dict(model.state_dict(), **{"obsolete.weight": torch.zeros(1)})
+    with pytest.raises(RuntimeError, match="Unexpected key"):
+        restored.load_state_dict(invalid_state, strict=True)
+
+
+def test_predictor_rejects_obsolete_architecture(tmp_path):
+    config = {"params": {"model_name": "raetkt", "architecture_version": "obsolete"}}
+    (tmp_path / "config.json").write_text(
+        __import__("json").dumps(config), encoding="utf-8")
+    predictor = load_script("wandb_raetkt_predict")
+    with pytest.raises(ValueError, match="retrain"):
+        predictor.main({"save_dir": str(tmp_path), "bz": 2})
 
 
 def test_public_identity_cli_and_parameter_count():
-    assert make_model().model_name == "raplkt"
-    assert RAPLKT_VERSION == "responsibility_partial_label_fixed_relation_mix_unit_evidence_v4"
-    train = load_script("wandb_raplkt_train")
-    predict = load_script("wandb_raplkt_predict")
+    assert make_model().model_name == "raetkt"
+    assert RAETKT_VERSION == "responsibility_partial_label_mean_unit_evidence_v5"
+    train = load_script("wandb_raetkt_train")
+    predict = load_script("wandb_raetkt_predict")
     args = train.build_parser().parse_args([])
-    assert args.save_dir == "saved_model_raplkt" and args.set_loss_weight == 0.1
-    assert args.relation_dim == 32 and args.relation_temperature == 1.0
-    assert args.relation_mix_lambda == 1.0
+    assert args.save_dir == "saved_model_raetkt" and args.set_loss_weight == 0.1
     assert args.responsibility_temperature == 1.0
     assert "full_config" not in vars(args)
-    assert predict.RAPLKT is RAPLKT
-    with pytest.raises(ValueError, match="Relation parameters"):
-        predict.main(dict(save_dir="unused", relation_temperature=0.5))
+    assert predict.RAETKT is RAETKT
     with pytest.raises(ValueError, match="responsibility temperature"):
         predict.main(dict(save_dir="unused", responsibility_temperature=0.5))
-    production = RAPLKT(n_question=101, n_pid=3162, d_model=256, n_blocks=2,
+    production = RAETKT(n_question=101, n_pid=3162, d_model=256, n_blocks=2,
                         dropout=0.2, d_ff=256, num_attn_heads=4)
     base_count = 2694517
-    relation_count = (3162 + 1 + 101 + 1) * 32
-    assert relation_count == 104480
-    assert sum(parameter.numel() for parameter in production.parameters()) == base_count + relation_count
+    assert sum(parameter.numel() for parameter in production.parameters()) == base_count
 
 
-def test_no_relation_responsibility_coupling_or_runtime_switch():
-    source = inspect.getsource(RAPLKT)
+def test_no_query_responsibility_coupling_or_runtime_switch():
+    source = inspect.getsource(RAETKT)
     forbidden_phrases = (
         "alpha" + " * rho", "rho" + " * alpha",
         "failure_increment" + " * alpha", "success_increment" + " * alpha",
@@ -337,7 +313,7 @@ def test_training_objective_and_validation():
         "masks": torch.tensor([[1, 1, 1]], dtype=torch.bool),
         "smasks": torch.tensor([[1, 1, 1]], dtype=torch.bool),
     }
-    total, parts = raplkt_model_forward(model, data, set_loss_weight=0.1, return_losses=True)
+    total, parts = raetkt_model_forward(model, data, set_loss_weight=0.1, return_losses=True)
     torch.testing.assert_close(total, parts["kt"] + 0.1 * parts["set"] + parts["reg"])
     total.backward()
     assert all(parameter.grad is None or torch.isfinite(parameter.grad).all()
@@ -348,8 +324,8 @@ def test_training_objective_and_validation():
 
 
 def test_smoke_train_and_predict(tmp_path, monkeypatch):
-    train = load_script("wandb_raplkt_train")
-    predict = load_script("wandb_raplkt_predict")
+    train = load_script("wandb_raetkt_train")
+    predict = load_script("wandb_raetkt_predict")
     config = write_dataset(tmp_path / "data")
     (tmp_path / "configs").mkdir()
     (tmp_path / "configs/data_config.json").write_text(
@@ -371,14 +347,10 @@ def test_smoke_train_and_predict(tmp_path, monkeypatch):
                       debug_responsibility=1, responsibility_sample_size=2))
     report = __import__("json").loads(
         (run_dir / "qid_evaluation_metrics.json").read_text(encoding="utf8"))
-    assert report["model_name"] == "raplkt"
-    assert report["question_aggregation"] == "fixed_mean_relation_mix"
-    assert report["relation_dim"] == 32 and report["relation_temperature"] == 1.0
-    assert report["relation_mix_lambda"] == 1.0
+    assert report["model_name"] == "raetkt"
+    assert report["question_aggregation"] == "mean"
     assert report["responsibility_temperature"] == 1.0
     assert report["failure_budget"] == 1.0
     assert report["success_budget"] == 1.0
     assert "set_level" in report["test"]
-    assert "question_relation" in report["test"]
-    assert "question_relation_raw" in report["test"]
     assert "affected" in report["window_test"]

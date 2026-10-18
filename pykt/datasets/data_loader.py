@@ -16,7 +16,7 @@ else:
 
 class KTDataset(Dataset):
     """Dataset for KT
-        can use to init dataset for: (for models except dkt_forget)
+        Sequence dataset for the AKT baseline.
             train data, valid data
             common test data(concept level evaluation), real educational scenario test data(question level evaluation).
     Args:
