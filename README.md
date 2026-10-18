@@ -99,4 +99,17 @@ CUDA_VISIBLE_DEVICES=0 python -u examples/wandb_raplkt_predict.py \
 python -m pytest -q tests/test_raplkt.py
 ```
 
-实现审计见 `RAPLKT_AUDIT.md` 和 `RAPLKT_RELATION_AUDIT.md`。
+
+## Data preprocessing
+
+Only Algebra2005, ASSIST2017, and EdNet-KT1 5k adapters are included. Shared splitting and utility modules remain required.
+
+Run from `examples/` with the repository root on `PYTHONPATH`:
+
+```bash
+python data_preprocess.py --dataset_name algebra2005
+python data_preprocess.py --dataset_name assist2017
+python data_preprocess.py --dataset_name ednet_kt1_5k --file_path ../data/ednet_kt1_5k/
+```
+
+The EdNet adapter is `ednet_kt1_preprocess_20260826_010359.py`. It reads an existing dataset directory containing `subset/ednet_kt1_5k_v1_manifest.json`, or a manifest JSON supplied via `--file_path`. Use `--file_path` to override the raw input for any dataset.
